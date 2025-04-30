@@ -1,0 +1,40 @@
+modules = ["cpp"]
+
+[nix]
+channel = "stable-24_05"
+
+[workflows]
+runButton = "Project"
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "System Monitor"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "run_system_monitor"
+
+[[workflows.workflow]]
+name = "System Monitor"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "mkdir -p imgui/lib/backend imgui/lib/gl3w/GL && apt-get update && apt-get install -y libsdl2-dev && make && ./system-monitor"
+waitForPort = 5000
+
+[[workflows.workflow]]
+name = "run_system_monitor"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "cd /home/replit && make && ./system-monitor"
+
+[deployment]
+run = ["sh", "-c", "mkdir -p imgui/lib/backend imgui/lib/gl3w/GL && apt-get update && apt-get install -y libsdl2-dev && make && ./system-monitor"]
