@@ -4,7 +4,7 @@ modules = ["cpp"]
 channel = "stable-24_05"
 
 [workflows]
-runButton = "System Monitor"
+runButton = "Project"
 
 [[workflows.workflow]]
 name = "Project"
@@ -34,7 +34,7 @@ author = "agent"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "cd /home/replit && make && ./system-monitor"
+args = "./system-monitor"
 
 [deployment]
 run = ["sh", "-c", "mkdir -p imgui/lib/backend imgui/lib/gl3w/GL && apt-get update && apt-get install -y libsdl2-dev && make && ./system-monitor"]
