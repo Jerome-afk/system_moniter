@@ -1,399 +1,320 @@
 #include "header.h"
 
-SystemInfo::SystemInfo() {
-    // Initialize history vectors with zeros
-    cpuData.history.resize(100, 0.0f);
-    fanData.history.resize(100, 0.0f);
-    thermalData.history.resize(100, 0.0f);
-    
-    // Set default values
-    cpuData.fps = 60;
-    cpuData.scale = 100.0f;
-    fanData.fps = 60;
-    fanData.scale = 100.0f;
-    thermalData.fps = 60;
-    thermalData.scale = 100.0f;
-    
-    // Initialize timers
-    lastCpuUpdateTime = std::chrono::steady_clock::now();
-    lastFanUpdateTime = std::chrono::steady_clock::now();
-    lastThermalUpdateTime = std::chrono::steady_clock::now();
-    
-    // Perform initial update
-    updateSystemInfo();
-    updateCPUUsage();
-    updateFanInfo();
-    updateThermalInfo();
-    updateTaskStats();
+// SystemManager Implementation
+SystemManager::SystemManager() {
+    cpu_history.reserve(HISTORY_SIZE);
+    fan_history.reserve(HISTORY_SIZE);
+    temp_history.reserve(HISTORY_SIZE);
 }
 
-SystemInfo::~SystemInfo() {
+void SystemManager::Initialize() {
+#ifdef _WIN32
+    InitializeWindows();
+#else
+    InitializeLinux();
+#endif
 }
 
-void SystemInfo::update() {
-    // Update system information periodically
-    updateSystemInfo();
-    updateCPUUsage();
-    updateFanInfo();
-    updateThermalInfo();
-    updateTaskStats();
-}
+void SystemManager::Update() {
+#ifdef _WIN32
+    UpdateWindows();
+#else
+    UpdateLinux();
+#endif
 
-std::string SystemInfo::getOSType() const {
-    return osType;
-}
-
-std::string SystemInfo::getUser() const {
-    return user;
-}
-
-std::string SystemInfo::getHostname() const {
-    return hostname;
-}
-
-std::string SystemInfo::getCPUType() const {
-    return cpuType;
-}
-
-SystemTasks SystemInfo::getTaskStats() const {
-    return tasks;
-}
-
-CPUData& SystemInfo::getCPUData() {
-    return cpuData;
-}
-
-FanData& SystemInfo::getFanData() {
-    return fanData;
-}
-
-ThermalData& SystemInfo::getThermalData() {
-    return thermalData;
-}
-
-void SystemInfo::updateSystemInfo() {
-    // Get OS type
-    std::ifstream osRelease("/etc/os-release");
-    std::string line;
-    
-    osType = "Linux";
-    
-    if (osRelease.is_open()) {
-        while (std::getline(osRelease, line)) {
-            if (line.substr(0, 5) == "NAME=") {
-                osType = line.substr(5);
-                // Remove quotes if present
-                if (osType.front() == '"' && osType.back() == '"') {
-                    osType = osType.substr(1, osType.size() - 2);
-                }
-                break;
-            }
+    // Update history
+    if (g_monitor.GetAnimateGraphs()) {
+        cpu_history.push_back(system_info.cpu_usage);
+        fan_history.push_back((float)system_info.fan_speed);
+        temp_history.push_back(system_info.temperature);
+        
+        if (cpu_history.size() > HISTORY_SIZE * 2) {
+            cpu_history.erase(cpu_history.begin(), cpu_history.begin() + (cpu_history.size() - HISTORY_SIZE));
+            fan_history.erase(fan_history.begin());
+            temp_history.erase(temp_history.begin());
         }
-        osRelease.close();
+    }
+}
+
+#ifdef _WIN32
+void SystemManager::InitializeWindows() {
+    // Get OS info
+    system_info.os_type = "Windows";
+    
+    // Get username
+    char username[256];
+    DWORD username_len = sizeof(username);
+    GetUserNameA(username, &username_len);
+    system_info.username = username;
+    
+    // Get hostname
+    char hostname[256];
+    DWORD hostname_len = sizeof(hostname);
+    GetComputerNameA(hostname, &hostname_len);
+    system_info.hostname = hostname;
+    
+    // Get CPU info
+    HKEY hKey;
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE, "HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+        char cpu_name[256];
+        DWORD cpu_name_size = sizeof(cpu_name);
+        RegQueryValueExA(hKey, "ProcessorNameString", NULL, NULL, (LPBYTE)cpu_name, &cpu_name_size);
+        system_info.cpu_type = cpu_name;
+        RegCloseKey(hKey);
+    }
+}
+
+void SystemManager::UpdateWindows() {
+    // Update CPU usage
+    static PDH_HQUERY cpuQuery;
+    static PDH_HCOUNTER cpuTotal;
+    static bool initialized = false;
+    
+    if (!initialized) {
+        PdhOpenQuery(NULL, NULL, &cpuQuery);
+        PdhAddEnglishCounter(cpuQuery, "\\Processor(_Total)\\% Processor Time", NULL, &cpuTotal);
+        PdhCollectQueryData(cpuQuery);
+        initialized = true;
     }
     
-    // Get current user
-    uid_t uid = geteuid();
-    struct passwd *pw = getpwuid(uid);
+    PdhCollectQueryData(cpuQuery);
+    PDH_FMT_COUNTERVALUE counterVal;
+    PdhGetFormattedCounterValue(cpuTotal, PDH_FMT_DOUBLE, NULL, &counterVal);
+    system_info.cpu_usage = (float)counterVal.doubleValue;
+    
+    // Update memory info
+    MEMORYSTATUSEX memInfo;
+    memInfo.dwLength = sizeof(MEMORYSTATUSEX);
+    GlobalMemoryStatusEx(&memInfo);
+    system_info.total_memory = memInfo.ullTotalPhys;
+    system_info.used_memory = memInfo.ullTotalPhys - memInfo.ullAvailPhys;
+    system_info.memory_usage = (float)(system_info.used_memory * 100.0 / system_info.total_memory);
+    
+    // Update process count
+    DWORD processes[1024], cbNeeded;
+    if (EnumProcesses(processes, sizeof(processes), &cbNeeded)) {
+        system_info.total_processes = cbNeeded / sizeof(DWORD);
+    }
+}
+#else
+void SystemManager::InitializeLinux() {
+    // Get OS info
+    struct utsname unameData;
+    uname(&unameData);
+    system_info.os_type = std::string(unameData.sysname) + " " + unameData.release;
+    
+    // Get username
+    struct passwd *pw = getpwuid(getuid());
     if (pw) {
-        user = pw->pw_name;
-    } else {
-        user = "unknown";
+        system_info.username = pw->pw_name;
     }
     
     // Get hostname
-    char hostBuffer[256];
-    if (gethostname(hostBuffer, sizeof(hostBuffer)) == 0) {
-        hostname = hostBuffer;
-    } else {
-        hostname = "unknown";
-    }
+    char hostname[256];
+    gethostname(hostname, sizeof(hostname));
+    system_info.hostname = hostname;
     
     // Get CPU info
     std::ifstream cpuinfo("/proc/cpuinfo");
-    if (cpuinfo.is_open()) {
-        while (std::getline(cpuinfo, line)) {
-            if (line.substr(0, 10) == "model name") {
-                size_t pos = line.find(':');
-                if (pos != std::string::npos) {
-                    cpuType = line.substr(pos + 2);
-                    break;
-                }
+    std::string line;
+    while (std::getline(cpuinfo, line)) {
+        if (line.find("model name") != std::string::npos) {
+            size_t pos = line.find(":");
+            if (pos != std::string::npos) {
+                system_info.cpu_type = line.substr(pos + 2);
+                break;
             }
         }
-        cpuinfo.close();
+    }
+}
+
+void SystemManager::UpdateLinux() {
+    UpdateCPUUsage();
+    UpdateThermalInfo();
+}
+
+void SystemManager::UpdateCPUUsage() {
+    static unsigned long long lastTotalUser, lastTotalUserLow, lastTotalSys, lastTotalIdle;
+    
+    std::ifstream file("/proc/stat");
+    std::string line;
+    std::getline(file, line);
+    
+    std::istringstream iss(line);
+    std::string cpu;
+    unsigned long long user, nice, system, idle, iowait, irq, softirq, steal, guest, guest_nice;
+    
+    iss >> cpu >> user >> nice >> system >> idle >> iowait >> irq >> softirq >> steal >> guest >> guest_nice;
+    
+    unsigned long long totalUser = user + nice;
+    unsigned long long totalSys = system + irq + softirq;
+    unsigned long long totalIdle = idle + iowait;
+    unsigned long long total = totalUser + totalSys + totalIdle;
+    
+    if (lastTotalUser != 0) {
+        unsigned long long totalDiff = total - (lastTotalUser + lastTotalSys + lastTotalIdle);
+        unsigned long long idleDiff = totalIdle - lastTotalIdle;
+        
+        system_info.cpu_usage = (float)((totalDiff - idleDiff) * 100.0 / totalDiff);
     }
     
-    if (cpuType.empty()) {
-        cpuType = "Unknown CPU";
-    }
+    lastTotalUser = totalUser;
+    lastTotalSys = totalSys;
+    lastTotalIdle = totalIdle;
 }
 
-void SystemInfo::updateCPUUsage() {
-    auto currentTime = std::chrono::steady_clock::now();
-    float elapsedMs = std::chrono::duration<float, std::milli>(currentTime - lastCpuUpdateTime).count();
+void SystemManager::UpdateThermalInfo() {
+    // Try to read temperature from thermal zones
+    std::ifstream temp_file("/sys/class/thermal/thermal_zone0/temp");
+    if (temp_file.is_open()) {
+        int temp_millicelsius;
+        temp_file >> temp_millicelsius;
+        system_info.temperature = temp_millicelsius / 1000.0f;
+    }
     
-    // Only update at the specified FPS rate if not paused
-    if (!cpuData.paused && elapsedMs >= (1000.0f / cpuData.fps)) {
-        lastCpuUpdateTime = currentTime;
-        
-        FILE* file = fopen("/proc/stat", "r");
-        if (file) {
-            unsigned long long totalUser, totalUserLow, totalSys, totalIdle, totalIoWait, totalIrq, totalSoftIrq, totalSteal;
-            
-            fscanf(file, "cpu %llu %llu %llu %llu %llu %llu %llu %llu", 
-                   &totalUser, &totalUserLow, &totalSys, &totalIdle, 
-                   &totalIoWait, &totalIrq, &totalSoftIrq, &totalSteal);
-            fclose(file);
-            
-            // Combine all idle and non-idle time
-            unsigned long long idle = totalIdle + totalIoWait;
-            unsigned long long nonIdle = totalUser + totalUserLow + totalSys + totalIrq + totalSoftIrq + totalSteal;
-            unsigned long long total = idle + nonIdle;
-            
-            // Calculate difference from last measurement
-            unsigned long long totalDiff = total - (lastTotalUser + lastTotalUserLow + lastTotalSys + lastTotalIdle);
-            unsigned long long idleDiff = idle - lastTotalIdle;
-            
-            // Calculate CPU usage percentage
-            if (totalDiff > 0) {
-                cpuData.usagePercent = 100.0f * (1.0f - (float)idleDiff / (float)totalDiff);
-            }
-            
-            // Store current values for next calculation
-            lastTotalUser = totalUser;
-            lastTotalUserLow = totalUserLow;
-            lastTotalSys = totalSys;
-            lastTotalIdle = idle;
-            
-            // Update history
-            if (cpuData.history.size() > 0) {
-                cpuData.history.erase(cpuData.history.begin());
-                cpuData.history.push_back(cpuData.usagePercent);
-            }
-        }
+    // Try to read fan info (simplified)
+    std::ifstream fan_file("/sys/class/hwmon/hwmon1/fan1_input");
+    if (fan_file.is_open()) {
+        fan_file >> system_info.fan_speed;
+        system_info.fan_active = system_info.fan_speed > 0;
     }
 }
+#endif
 
-void SystemInfo::updateFanInfo() {
-    auto currentTime = std::chrono::steady_clock::now();
-    float elapsedMs = std::chrono::duration<float, std::milli>(currentTime - lastFanUpdateTime).count();
+void SystemManager::RenderSystemInfo() {
+    // Basic system information
+    ImGui::Text("Operating System: %s", system_info.os_type.c_str());
+    ImGui::Text("User: %s", system_info.username.c_str());
+    ImGui::Text("Hostname: %s", system_info.hostname.c_str());
+    ImGui::Text("Total Processes: %d", system_info.total_processes);
+    ImGui::Text("Running: %d, Sleeping: %d, Zombie: %d, Stopped: %d", 
+               system_info.running_processes, system_info.sleeping_processes,
+               system_info.zombie_processes, system_info.stopped_processes);
+    ImGui::Text("CPU: %s", system_info.cpu_type.c_str());
     
-    // Only update at the specified FPS rate if not paused
-    if (!fanData.paused && elapsedMs >= (1000.0f / fanData.fps)) {
-        lastFanUpdateTime = currentTime;
-        
-        // Check if fan information is available via hwmon
-        DIR* hwmonDir = opendir("/sys/class/hwmon");
-        if (hwmonDir) {
-            struct dirent* entry;
-            bool fanFound = false;
-            
-            while ((entry = readdir(hwmonDir)) != nullptr) {
-                std::string hwmonPath = "/sys/class/hwmon/";
-                hwmonPath += entry->d_name;
-                
-                // Check for fan speed in this hwmon directory
-                std::string fanSpeedPath = hwmonPath + "/fan1_input";
-                std::ifstream fanSpeedFile(fanSpeedPath);
-                
-                if (fanSpeedFile.is_open()) {
-                    std::string speedStr;
-                    if (std::getline(fanSpeedFile, speedStr)) {
-                        fanData.speed = std::stoi(speedStr);
-                        fanData.enabled = (fanData.speed > 0);
-                        
-                        // Try to get fan level if available
-                        std::string fanLevelPath = hwmonPath + "/fan1_target";
-                        std::ifstream fanLevelFile(fanLevelPath);
-                        if (fanLevelFile.is_open()) {
-                            std::string levelStr;
-                            if (std::getline(fanLevelFile, levelStr)) {
-                                fanData.level = std::stoi(levelStr);
-                            }
-                            fanLevelFile.close();
-                        }
-                        
-                        fanFound = true;
-                        break;
-                    }
-                    fanSpeedFile.close();
-                }
-            }
-            
-            closedir(hwmonDir);
-            
-            // If no fan info found, set some default values
-            if (!fanFound) {
-                fanData.enabled = false;
-                fanData.speed = 0;
-                fanData.level = 0;
-            }
-        }
-        
-        // Update fan history (we'll use random variations if no real data is available)
-        if (fanData.history.size() > 0) {
-            float lastValue = fanData.history.back();
-            float newValue = fanData.speed;
-            
-            // If we don't have real fan data, create simulated data
-            if (fanData.speed == 0) {
-                // Generate a somewhat realistic fan curve between 1000-2500 RPM
-                newValue = lastValue + ((rand() % 200) - 100);
-                if (newValue < 1000) newValue = 1000;
-                if (newValue > 2500) newValue = 2500;
-                fanData.speed = newValue;
-                fanData.enabled = true;
-            }
-            
-            fanData.history.erase(fanData.history.begin());
-            fanData.history.push_back(newValue);
-        }
-    }
-}
-
-void SystemInfo::updateThermalInfo() {
-    auto currentTime = std::chrono::steady_clock::now();
-    float elapsedMs = std::chrono::duration<float, std::milli>(currentTime - lastThermalUpdateTime).count();
+    ImGui::Separator();
     
-    // Only update at the specified FPS rate if not paused
-    if (!thermalData.paused && elapsedMs >= (1000.0f / thermalData.fps)) {
-        lastThermalUpdateTime = currentTime;
-        
-        // Check thermal zones
-        DIR* thermalDir = opendir("/sys/class/thermal");
-        if (thermalDir) {
-            struct dirent* entry;
-            bool tempFound = false;
-            
-            while ((entry = readdir(thermalDir)) != nullptr) {
-                std::string name = entry->d_name;
-                
-                // Look for thermal zones
-                if (name.find("thermal_zone") == 0) {
-                    std::string typePath = "/sys/class/thermal/" + name + "/type";
-                    std::string tempPath = "/sys/class/thermal/" + name + "/temp";
-                    
-                    std::ifstream typeFile(typePath);
-                    std::string type;
-                    
-                    if (typeFile.is_open() && std::getline(typeFile, type)) {
-                        // Look for CPU or core-related thermal zone
-                        if (type.find("cpu") != std::string::npos || 
-                            type.find("core") != std::string::npos || 
-                            type.find("x86") != std::string::npos) {
-                            
-                            std::ifstream tempFile(tempPath);
-                            std::string tempStr;
-                            
-                            if (tempFile.is_open() && std::getline(tempFile, tempStr)) {
-                                // Temperature is usually in millidegrees Celsius
-                                int temp = std::stoi(tempStr);
-                                thermalData.temperature = temp / 1000.0f;
-                                tempFound = true;
-                                tempFile.close();
-                                break;
-                            }
-                        }
-                        typeFile.close();
-                    }
-                }
-            }
-            
-            closedir(thermalDir);
-            
-            // If no temperature found, try alternative locations
-            if (!tempFound) {
-                // Try reading from /proc/acpi/thermal_zone or other locations
-                // For this example, we'll just set a default temperature
-                thermalData.temperature = 45.0f + (rand() % 15);
-            }
+    // Performance tabs
+    if (ImGui::BeginTabBar("PerformanceTabs")) {
+        if (ImGui::BeginTabItem("CPU")) {
+            RenderCPUTab();
+            ImGui::EndTabItem();
         }
         
-        // Update temperature history
-        if (thermalData.history.size() > 0) {
-            thermalData.history.erase(thermalData.history.begin());
-            thermalData.history.push_back(thermalData.temperature);
+        if (ImGui::BeginTabItem("Fan")) {
+            RenderFanTab();
+            ImGui::EndTabItem();
         }
+        
+        if (ImGui::BeginTabItem("Thermal")) {
+            RenderThermalTab();
+            ImGui::EndTabItem();
+        }
+        
+        ImGui::EndTabBar();
     }
 }
 
-void SystemInfo::updateTaskStats() {
-    // Reset counts
-    tasks.running = 0;
-    tasks.sleeping = 0;
-    tasks.uninterruptible = 0;
-    tasks.zombie = 0;
-    tasks.traced_stopped = 0;
-    tasks.interrupted = 0;
-    tasks.total = 0;
+void SystemManager::RenderCPUTab() {
+    ImGui::Text("CPU Usage: %.1f%%", system_info.cpu_usage);
     
-    DIR* procDir = opendir("/proc");
-    if (procDir) {
-        struct dirent* entry;
-        
-        while ((entry = readdir(procDir)) != nullptr) {
-            // Check if the directory name is a number (PID)
-            std::string name = entry->d_name;
-            bool isNumeric = true;
-            
-            for (char c : name) {
-                if (!isdigit(c)) {
-                    isNumeric = false;
-                    break;
-                }
-            }
-            
-            if (isNumeric) {
-                // This is a process directory
-                std::string statPath = "/proc/" + name + "/stat";
-                std::ifstream statFile(statPath);
-                
-                if (statFile.is_open()) {
-                    std::string line;
-                    if (std::getline(statFile, line)) {
-                        std::istringstream iss(line);
-                        std::string unused;
-                        char state;
-                        
-                        // Format: pid (comm) state ppid...
-                        iss >> unused; // pid
-                        
-                        // Extract comm (process name) which might contain spaces
-                        size_t start = line.find('(');
-                        size_t end = line.find(')', start);
-                        if (start != std::string::npos && end != std::string::npos) {
-                            // Skip to the state character
-                            iss.seekg(end + 2);
-                            iss >> state;
-                            
-                            // Increment the appropriate counter based on process state
-                            switch (state) {
-                                case 'R': tasks.running++; break;
-                                case 'S': tasks.sleeping++; break;
-                                case 'D': tasks.uninterruptible++; break;
-                                case 'Z': tasks.zombie++; break;
-                                case 'T': tasks.traced_stopped++; break;
-                                case 'I': tasks.interrupted++; break;
-                            }
-                            
-                            tasks.total++;
-                        }
-                    }
-                    statFile.close();
-                }
-            }
+    RenderGraphControls();
+    
+    if (!cpu_history.empty()) {
+        static int display_start = 0;
+
+        if (g_monitor.GetAnimateGraphs()) {
+            display_start = std::max(0, (int)cpu_history.size() - HISTORY_SIZE);
         }
+
+        int display_count = std::min(HISTORY_SIZE, (int)cpu_history.size() - display_start);
+
+        ImGui::PlotLines("CPU Usage", cpu_history.data() + display_start, display_count, 
+                       0, nullptr, 0.0f, g_monitor.GetGraphYScale(), ImVec2(0, 200));
         
-        closedir(procDir);
+        // Overlay text
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() - 50);
+        ImGui::Text("Current: %.1f%%", system_info.cpu_usage);
     }
 }
 
-void SystemInfo::drawPerformanceGraph(const char* label, std::vector<float>& history, float currentValue, 
-                                  bool& paused, int& fps, float& scale, const char* overlay) {
-    // This function is for ImGui UI - not needed for console version
+void SystemManager::RenderFanTab() {
+    ImGui::Text("Fan Status: %s", system_info.fan_active ? "Active" : "Inactive");
+    ImGui::Text("Fan Speed: %d RPM", system_info.fan_speed);
+    
+    RenderGraphControls();
+    
+    if (!fan_history.empty()) {
+        float max_speed = *std::max_element(fan_history.begin(), fan_history.end());
+        ImGui::PlotLines("Fan Speed", fan_history.data(), fan_history.size(), 
+                       0, nullptr, 0.0f, max_speed, ImVec2(0, 200));
+    }
 }
 
-void SystemInfo::drawSystemMonitor() {
-    // This function is for ImGui UI - not needed for console version
+void SystemManager::RenderThermalTab() {
+    ImGui::Text("Temperature: %.1f°C", system_info.temperature);
+    
+    RenderGraphControls();
+    
+    if (!temp_history.empty()) {
+        ImGui::PlotLines("Temperature", temp_history.data(), temp_history.size(), 
+                       0, nullptr, 0.0f, 100.0f, ImVec2(0, 200));
+        
+        // Overlay text
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() - 50);
+        ImGui::Text("Current: %.1f°C", system_info.temperature);
+    }
+}
+
+void SystemManager::RenderGraphControls() {
+    bool animate = g_monitor.GetAnimateGraphs();
+    if (ImGui::Checkbox("Animate", &animate)) {
+        g_monitor.SetAnimateGraphs(animate);
+    }
+    
+    float fps = g_monitor.GetGraphFPS();
+    if (ImGui::SliderFloat("FPS", &fps, 1.0f, 60.0f)) {
+        g_monitor.SetGraphFPS(fps);
+    }
+    
+    float scale = g_monitor.GetGraphYScale();
+    if (ImGui::SliderFloat("Y Scale", &scale, 50.0f, 200.0f)) {
+        g_monitor.SetGraphYScale(scale);
+    }
+}
+
+// SystemMonitor Implementation
+SystemMonitor::SystemMonitor() : memory_manager(&const_cast<SystemInfo&>(system_manager.GetSystemInfo())) {
+    system_manager.Initialize();
+}
+
+void SystemMonitor::Update() {
+    std::lock_guard<std::mutex> lock(data_mutex);
+    
+    system_manager.Update();
+    memory_manager.Update();
+    network_manager.Update();
+}
+
+void SystemMonitor::RenderSystemMonitor() {
+    std::lock_guard<std::mutex> lock(data_mutex);
+    
+    if (ImGui::BeginTabBar("MainTabs")) {
+        if (ImGui::BeginTabItem("System Monitor")) {
+            system_manager.RenderSystemInfo();
+            ImGui::EndTabItem();
+        }
+        
+        if (ImGui::BeginTabItem("Memory & Processes")) {
+            memory_manager.RenderMemoryAndProcesses();
+            ImGui::EndTabItem();
+        }
+        
+        if (ImGui::BeginTabItem("Network")) {
+            network_manager.RenderNetwork();
+            ImGui::EndTabItem();
+        }
+        
+        ImGui::EndTabBar();
+    }
 }

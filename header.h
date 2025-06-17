@@ -1,237 +1,228 @@
-#ifndef HEADER_H
-#define HEADER_H
+#ifndef SYSTEM_MONITOR_H
+#define SYSTEM_MONITOR_H
 
-#include <string>
+#include <imgui.h>
+#include <SDL2/SDL.h>
+#include <imgui_impl_sdl.h>
+#include <imgui_impl_opengl3.h>
+#include <GL/gl3w.h>
 #include <vector>
-#include <chrono>
+#include <string>
 #include <map>
-#include <unordered_map>
-#include <algorithm>
-#include <cstring>
+#include <thread>
+#include <chrono>
 #include <fstream>
 #include <sstream>
-#include <iostream>
-#include <iomanip>
-#include <memory>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <unistd.h>
-#include <pwd.h>
-#include <dirent.h>
+#include <algorithm>
+#include <numeric>
 #include <cmath>
-#include <regex>
-#include <array>
-#include <set>
-#include <sys/statvfs.h>
+#include <mutex>
 
-// Forward declarations
-class SystemInfo;
-class MemoryInfo;
-class NetworkInfo;
+#ifdef _WIN32
+#include <windows.h>
+#include <psapi.h>
+#include <pdh.h>
+#include <iphlpapi.h>
+#pragma comment(lib, "pdh.lib")
+#pragma comment(lib, "iphlpapi.lib")
+#else
+#include <unistd.h>
+#include <sys/utsname.h>
+#include <sys/sysinfo.h>
+#include <dirent.h>
+#include <pwd.h>
+#include <ifaddrs.h>
+#include <net/if.h>
+#include <arpa/inet.h>
+#endif
 
 // Data structures
-struct CPUData {
-    float usagePercent = 0.0f;
-    std::vector<float> history;
-    bool paused = false;
-    int fps = 60;
-    float scale = 100.0f;
-};
-
-struct FanData {
-    bool enabled = false;
-    int speed = 0;
-    int level = 0;
-    std::vector<float> history;
-    bool paused = false;
-    int fps = 60;
-    float scale = 100.0f;
-};
-
-struct ThermalData {
-    float temperature = 0.0f;
-    std::vector<float> history;
-    bool paused = false;
-    int fps = 60;
-    float scale = 100.0f;
-};
-
-struct MemoryData {
-    unsigned long total = 0;
-    unsigned long used = 0;
-    unsigned long free = 0;
-    float usedPercent = 0.0f;
-};
-
-struct SwapData {
-    unsigned long total = 0;
-    unsigned long used = 0;
-    unsigned long free = 0;
-    float usedPercent = 0.0f;
-};
-
-struct DiskData {
-    unsigned long total = 0;
-    unsigned long used = 0;
-    unsigned long free = 0;
-    float usedPercent = 0.0f;
-};
-
 struct ProcessInfo {
     int pid;
     std::string name;
     std::string state;
-    float cpuUsage;
-    float memoryUsage;
-    bool selected;
+    float cpu_usage;
+    float memory_usage;
 };
 
 struct NetworkInterface {
     std::string name;
+    std::string description;
     std::string ipv4;
-    
-    // RX stats
-    unsigned long rx_bytes;
-    unsigned long rx_packets;
-    unsigned long rx_errs;
-    unsigned long rx_drop;
-    unsigned long rx_fifo;
-    unsigned long rx_frame;
-    unsigned long rx_compressed;
-    unsigned long rx_multicast;
-    
-    // TX stats
-    unsigned long tx_bytes;
-    unsigned long tx_packets;
-    unsigned long tx_errs;
-    unsigned long tx_drop;
-    unsigned long tx_fifo;
-    unsigned long tx_colls;
-    unsigned long tx_carrier;
-    unsigned long tx_compressed;
-    
-    float rx_usage_percent;
-    float tx_usage_percent;
+    int type;
+    std::string ipv6;
+    bool operational_status;
+    std::string mac_address;
+    uint32_t speed_mbps;
+    uint64_t rx_rate, rx_bytes, rx_packets, rx_errs, rx_drop, rx_fifo, rx_frame, rx_compressed, rx_multicast;
+    uint64_t tx_rate, tx_bytes, tx_packets, tx_errs, tx_drop, tx_fifo, tx_colls, tx_carrier, tx_compressed;
+    uint64_t rx_packet_rate, tx_packet_rate;
 };
 
-struct SystemTasks {
-    int running = 0;
-    int sleeping = 0;
-    int uninterruptible = 0;
-    int zombie = 0;
-    int traced_stopped = 0;
-    int interrupted = 0;
-    int total = 0;
-};
-
-// System Info Class
-class SystemInfo {
-public:
-    SystemInfo();
-    ~SystemInfo();
-    
-    void update();
-    
-    // System info getters
-    std::string getOSType() const;
-    std::string getUser() const;
-    std::string getHostname() const;
-    std::string getCPUType() const;
-    SystemTasks getTaskStats() const;
-    
-    // CPU, Fan, and Thermal data
-    CPUData& getCPUData();
-    FanData& getFanData();
-    ThermalData& getThermalData();
-    
-    // Draw system monitor tab
-    void drawSystemMonitor();
-    
-private:
-    std::string osType;
-    std::string user;
+struct SystemInfo {
+    std::string os_type;
+    std::string username;
     std::string hostname;
-    std::string cpuType;
-    SystemTasks tasks;
-    
-    CPUData cpuData;
-    FanData fanData;
-    ThermalData thermalData;
-    
-    // CPU measurements
-    unsigned long long lastTotalUser = 0;
-    unsigned long long lastTotalUserLow = 0;
-    unsigned long long lastTotalSys = 0;
-    unsigned long long lastTotalIdle = 0;
-    
-    std::chrono::time_point<std::chrono::steady_clock> lastCpuUpdateTime;
-    std::chrono::time_point<std::chrono::steady_clock> lastFanUpdateTime;
-    std::chrono::time_point<std::chrono::steady_clock> lastThermalUpdateTime;
-    
-    // Private methods
-    void updateSystemInfo();
-    void updateCPUUsage();
-    void updateFanInfo();
-    void updateThermalInfo();
-    void updateTaskStats();
-    
-    void drawPerformanceGraph(const char* label, std::vector<float>& history, float currentValue, 
-                            bool& paused, int& fps, float& scale, const char* overlay);
+    int total_processes = 0;
+    int running_processes = 0;
+    int sleeping_processes = 0;
+    int zombie_processes = 0;
+    int stopped_processes = 0;
+    std::string cpu_type;
+    float cpu_usage = 0.0f;
+    float memory_usage = 0.0f;
+    float swap_usage = 0.0f;
+    float disk_usage = 0.0f;
+    float temperature = 0.0f;
+    int fan_speed = 0;
+    bool fan_active = false;
+    uint64_t total_memory = 0;
+    uint64_t used_memory = 0;
+    uint64_t total_swap = 0;
+    uint64_t used_swap = 0;
+    uint64_t total_disk = 0;
+    uint64_t used_disk = 0;
 };
 
-// Memory Info Class
-class MemoryInfo {
-public:
-    MemoryInfo();
-    ~MemoryInfo();
-    
-    void update();
-    std::vector<ProcessInfo>& getProcesses();
-    
-    MemoryData& getRAMData();
-    SwapData& getSwapData();
-    DiskData& getDiskData();
-    
-    // Draw memory monitor tab
-    void drawMemoryMonitor();
-    
+// Forward declarations
+class SystemMonitor;
+class SystemManager;
+class MemoryManager;
+class NetworkManager;
+
+// System Manager Class
+class SystemManager {
 private:
-    MemoryData ram;
-    SwapData swap;
-    DiskData disk;
+    SystemInfo system_info;
+    std::vector<float> cpu_history;
+    std::vector<float> fan_history;
+    std::vector<float> temp_history;
+    static const int HISTORY_SIZE = 200;
+
+public:
+    SystemManager();
+    void Initialize();
+    void Update();
+    void UpdateCPUUsage();
+    void UpdateThermalInfo();
+    
+    // Getters
+    const SystemInfo& GetSystemInfo() const { return system_info; }
+    const std::vector<float>& GetCPUHistory() const { return cpu_history; }
+    const std::vector<float>& GetFanHistory() const { return fan_history; }
+    const std::vector<float>& GetTempHistory() const { return temp_history; }
+    
+    // Rendering
+    void RenderSystemInfo();
+    void RenderCPUTab();
+    void RenderFanTab();
+    void RenderThermalTab();
+    void RenderGraphControls();
+
+private:
+#ifdef _WIN32
+    void InitializeWindows();
+    void UpdateWindows();
+#else
+    void InitializeLinux();
+    void UpdateLinux();
+#endif
+};
+
+// Memory Manager Class
+class MemoryManager {
+private:
     std::vector<ProcessInfo> processes;
-    std::string filterText;
-    
-    // Process CPU usage calculation
-    std::unordered_map<int, unsigned long long> lastProcessCpuTime;
-    std::unordered_map<int, std::chrono::time_point<std::chrono::steady_clock>> lastProcessUpdateTime;
-    
-    void updateMemoryInfo();
-    void updateSwapInfo();
-    void updateDiskInfo();
-    void updateProcesses();
-    
-    float calculateProcessCpuUsage(int pid, unsigned long long processCpuTime);
-};
+    std::vector<bool> selected_processes;
+    char process_filter[256] = "";
+    SystemInfo* system_info_ref;
 
-// Network Info Class
-class NetworkInfo {
 public:
-    NetworkInfo();
-    ~NetworkInfo();
+    MemoryManager(SystemInfo* sys_info);
+    void Update();
+    void UpdateMemoryInfo();
+    void UpdateProcesses();
+    void UpdateDiskInfo();
+    void KillSelectedProcesses();
     
-    void update();
-    std::vector<NetworkInterface>& getInterfaces();
+    // Getters
+    const std::vector<ProcessInfo>& GetProcesses() const { return processes; }
     
-    // Draw network monitor tab
-    void drawNetworkMonitor();
-    std::string formatBytes(unsigned long bytes);
+    // Rendering
+    void RenderMemoryAndProcesses();
     
-private:
-    std::vector<NetworkInterface> interfaces;
-    int currentTabIndex;
-    
-    void updateNetworkInterfaces();
+    // Utility
+    std::string FormatBytes(uint64_t bytes);
 };
 
-#endif // HEADER_H
+// Network Manager Class
+class NetworkManager {
+private:
+    std::vector<NetworkInterface> network_interfaces;
+    std::vector<NetworkInterface> previous_interfaces;
+    std::chrono::steady_clock::time_point previous_update_time;
+
+public:
+    NetworkManager();
+    void Update();
+    // void UpdateNetworkInfo();
+    void UpdateNetworkInterfaces();
+    void UpdateNetworkInterfacesWindows();
+    void CalculateNetworkRates();
+    
+    // Getters
+    const std::vector<NetworkInterface>& GetNetworkInterfaces() const { return network_interfaces; }
+    
+    // Rendering
+    void RenderNetwork();
+    void RenderNetworkTable(bool is_rx);
+    void RenderNetworkInfo();
+    void RenderNetworkStatistics();
+    
+    // Utility
+    std::string FormatRate(uint64_t bytes_per_sec);
+    std::string FormatBytes(uint64_t bytes);
+};
+
+// Main System Monitor Class
+class SystemMonitor {
+private:
+    SystemManager system_manager;
+    MemoryManager memory_manager;
+    NetworkManager network_manager;
+    std::mutex data_mutex;
+    
+    // UI State
+    bool animate_graphs = true;
+    float graph_fps = 30.0f;
+    float graph_y_scale = 100.0f;
+    int selected_tab = 0;
+
+public:
+    SystemMonitor();
+    void Update();
+    void RenderSystemMonitor();
+    
+    // Getters for managers
+    SystemManager& GetSystemManager() { return system_manager; }
+    MemoryManager& GetMemoryManager() { return memory_manager; }
+    NetworkManager& GetNetworkManager() { return network_manager; }
+    std::mutex& GetDataMutex() { return data_mutex; }
+    
+    // UI State getters/setters
+    bool GetAnimateGraphs() const { return animate_graphs; }
+    void SetAnimateGraphs(bool animate) { animate_graphs = animate; }
+    float GetGraphFPS() const { return graph_fps; }
+    void SetGraphFPS(float fps) { graph_fps = fps; }
+    float GetGraphYScale() const { return graph_y_scale; }
+    void SetGraphYScale(float scale) { graph_y_scale = scale; }
+};
+
+// Global variables
+extern SystemMonitor g_monitor;
+extern bool g_running;
+
+// Function declarations
+void UpdateThread();
+
+#endif // SYSTEM_MONITOR_H

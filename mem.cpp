@@ -1,297 +1,339 @@
 #include "header.h"
 
-MemoryInfo::MemoryInfo() {
-    // Initialize filter text
-    filterText = "";
+// MemoryManager Implementation
+MemoryManager::MemoryManager(SystemInfo* sys_info) : system_info_ref(sys_info) {
+    memset(process_filter, 0, sizeof(process_filter));
+}
+
+void MemoryManager::Update() {
+    UpdateMemoryInfo();
+    UpdateProcesses();
+    UpdateDiskInfo();
+}
+
+void MemoryManager::UpdateMemoryInfo() {
+#ifdef _WIN32
+    // Windows memory info
+    MEMORYSTATUSEX memInfo;
+    memInfo.dwLength = sizeof(MEMORYSTATUSEX);
+    GlobalMemoryStatusEx(&memInfo);
+    system_info_ref->total_memory = memInfo.ullTotalPhys;
+    system_info_ref->used_memory = memInfo.ullTotalPhys - memInfo.ullAvailPhys;
+    system_info_ref->memory_usage = (float)(system_info_ref->used_memory * 100.0 / system_info_ref->total_memory);
     
-    // Initial update
-    updateMemoryInfo();
-    updateSwapInfo();
-    updateDiskInfo();
-    updateProcesses();
-}
-
-MemoryInfo::~MemoryInfo() {
-}
-
-void MemoryInfo::update() {
-    updateMemoryInfo();
-    updateSwapInfo();
-    updateDiskInfo();
-    updateProcesses();
-}
-
-std::vector<ProcessInfo>& MemoryInfo::getProcesses() {
-    return processes;
-}
-
-MemoryData& MemoryInfo::getRAMData() {
-    return ram;
-}
-
-SwapData& MemoryInfo::getSwapData() {
-    return swap;
-}
-
-DiskData& MemoryInfo::getDiskData() {
-    return disk;
-}
-
-void MemoryInfo::updateMemoryInfo() {
+    // Windows doesn't have traditional swap, but has virtual memory
+    system_info_ref->total_swap = memInfo.ullTotalVirtual - memInfo.ullTotalPhys;
+    system_info_ref->used_swap = (memInfo.ullTotalVirtual - memInfo.ullAvailVirtual) - system_info_ref->used_memory;
+    if (system_info_ref->total_swap > 0) {
+        system_info_ref->swap_usage = (float)(system_info_ref->used_swap * 100.0 / system_info_ref->total_swap);
+    }
+#else
     std::ifstream meminfo("/proc/meminfo");
     std::string line;
+    std::map<std::string, uint64_t> mem_values;
     
-    unsigned long memTotal = 0;
-    unsigned long memFree = 0;
-    unsigned long memAvailable = 0;
-    unsigned long buffers = 0;
-    unsigned long cached = 0;
-    
-    if (meminfo.is_open()) {
-        while (std::getline(meminfo, line)) {
-            if (line.find("MemTotal:") == 0) {
-                std::istringstream iss(line);
-                std::string dummy;
-                iss >> dummy >> memTotal;
-            } else if (line.find("MemFree:") == 0) {
-                std::istringstream iss(line);
-                std::string dummy;
-                iss >> dummy >> memFree;
-            } else if (line.find("MemAvailable:") == 0) {
-                std::istringstream iss(line);
-                std::string dummy;
-                iss >> dummy >> memAvailable;
-            } else if (line.find("Buffers:") == 0) {
-                std::istringstream iss(line);
-                std::string dummy;
-                iss >> dummy >> buffers;
-            } else if (line.find("Cached:") == 0 && line.find("SwapCached:") != 0) {
-                std::istringstream iss(line);
-                std::string dummy;
-                iss >> dummy >> cached;
-            }
-        }
-        meminfo.close();
-    }
-    
-    // Convert from KB to bytes
-    ram.total = memTotal * 1024;
-    ram.free = memFree * 1024;
-    
-    // Calculate used memory (accounting for buffers and cache)
-    unsigned long actuallyUsed = memTotal - memFree - buffers - cached;
-    ram.used = actuallyUsed * 1024;
-    
-    // Calculate percentage
-    if (ram.total > 0) {
-        ram.usedPercent = (float)ram.used / (float)ram.total * 100.0f;
-    } else {
-        ram.usedPercent = 0.0f;
-    }
-}
-
-void MemoryInfo::updateSwapInfo() {
-    std::ifstream meminfo("/proc/meminfo");
-    std::string line;
-    
-    unsigned long swapTotal = 0;
-    unsigned long swapFree = 0;
-    
-    if (meminfo.is_open()) {
-        while (std::getline(meminfo, line)) {
-            if (line.find("SwapTotal:") == 0) {
-                std::istringstream iss(line);
-                std::string dummy;
-                iss >> dummy >> swapTotal;
-            } else if (line.find("SwapFree:") == 0) {
-                std::istringstream iss(line);
-                std::string dummy;
-                iss >> dummy >> swapFree;
-            }
-        }
-        meminfo.close();
-    }
-    
-    // Convert from KB to bytes
-    swap.total = swapTotal * 1024;
-    swap.free = swapFree * 1024;
-    swap.used = swap.total - swap.free;
-    
-    // Calculate percentage
-    if (swap.total > 0) {
-        swap.usedPercent = (float)swap.used / (float)swap.total * 100.0f;
-    } else {
-        swap.usedPercent = 0.0f;
-    }
-}
-
-void MemoryInfo::updateDiskInfo() {
-    struct statvfs stat;
-    
-    // Get root filesystem stats
-    if (statvfs("/", &stat) == 0) {
-        // Calculate total, free, and used space
-        disk.total = (unsigned long)stat.f_blocks * stat.f_frsize;
-        disk.free = (unsigned long)stat.f_bfree * stat.f_frsize;
-        disk.used = disk.total - disk.free;
+    while (std::getline(meminfo, line)) {
+        std::istringstream iss(line);
+        std::string key;
+        uint64_t value;
+        std::string unit;
         
-        // Calculate percentage
-        if (disk.total > 0) {
-            disk.usedPercent = (float)disk.used / (float)disk.total * 100.0f;
-        } else {
-            disk.usedPercent = 0.0f;
-        }
-    }
-}
-
-float MemoryInfo::calculateProcessCpuUsage(int pid, unsigned long long processCpuTime) {
-    auto currentTime = std::chrono::steady_clock::now();
-    
-    // Get the last time we checked this process
-    auto lastUpdateIter = lastProcessUpdateTime.find(pid);
-    auto lastCpuTimeIter = lastProcessCpuTime.find(pid);
-    
-    float cpuUsage = 0.0f;
-    
-    if (lastUpdateIter != lastProcessUpdateTime.end() && lastCpuTimeIter != lastProcessCpuTime.end()) {
-        // Calculate time difference
-        float elapsedSecs = std::chrono::duration<float>(currentTime - lastUpdateIter->second).count();
-        
-        // Calculate CPU time difference
-        unsigned long long cpuTimeDiff = processCpuTime - lastCpuTimeIter->second;
-        
-        // Calculate CPU usage percentage (considering all cores)
-        int numCPUs = sysconf(_SC_NPROCESSORS_ONLN);
-        if (elapsedSecs > 0 && numCPUs > 0) {
-            cpuUsage = (cpuTimeDiff / elapsedSecs) * 100.0f / numCPUs;
+        if (iss >> key >> value >> unit) {
+            key.pop_back(); // Remove ':'
+            mem_values[key] = value * 1024; // Convert to bytes
         }
     }
     
-    // Update the last checked time and CPU time
-    lastProcessUpdateTime[pid] = currentTime;
-    lastProcessCpuTime[pid] = processCpuTime;
+    system_info_ref->total_memory = mem_values["MemTotal"];
+    system_info_ref->used_memory = system_info_ref->total_memory - mem_values["MemAvailable"];
+    system_info_ref->memory_usage = (float)(system_info_ref->used_memory * 100.0 / system_info_ref->total_memory);
     
-    return cpuUsage;
+    system_info_ref->total_swap = mem_values["SwapTotal"];
+    system_info_ref->used_swap = system_info_ref->total_swap - mem_values["SwapFree"];
+    if (system_info_ref->total_swap > 0) {
+        system_info_ref->swap_usage = (float)(system_info_ref->used_swap * 100.0 / system_info_ref->total_swap);
+    }
+#endif
 }
 
-void MemoryInfo::updateProcesses() {
+void MemoryManager::UpdateProcesses() {
+#ifdef _WIN32
+    // Windows process enumeration
     processes.clear();
+    system_info_ref->total_processes = 0;
+    system_info_ref->running_processes = 0;
+    system_info_ref->sleeping_processes = 0;
+    system_info_ref->zombie_processes = 0;
+    system_info_ref->stopped_processes = 0;
     
-    DIR* procDir = opendir("/proc");
-    if (procDir) {
-        struct dirent* entry;
-        long pageSizeKB = sysconf(_SC_PAGESIZE) / 1024; // Page size in KB
+    DWORD process_ids[1024], cbNeeded;
+    if (EnumProcesses(process_ids, sizeof(process_ids), &cbNeeded)) {
+        DWORD numProcesses = cbNeeded / sizeof(DWORD);
+        system_info_ref->total_processes = numProcesses;
+        system_info_ref->running_processes = numProcesses; // Simplified for Windows
         
-        while ((entry = readdir(procDir)) != nullptr) {
-            // Check if the directory name is a number (PID)
-            std::string name = entry->d_name;
-            bool isNumeric = true;
-            
-            for (char c : name) {
-                if (!isdigit(c)) {
-                    isNumeric = false;
-                    break;
+        for (DWORD i = 0; i < numProcesses; i++) {
+            HANDLE hProcess = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, process_ids[i]);
+            if (hProcess) {
+                ProcessInfo proc;
+                proc.pid = process_ids[i];
+                
+                // Get process name
+                char processName[MAX_PATH];
+                if (GetModuleBaseNameA(hProcess, NULL, processName, sizeof(processName))) {
+                    proc.name = processName;
+                } else {
+                    proc.name = "Unknown";
                 }
+                
+                // Get memory usage
+                PROCESS_MEMORY_COUNTERS pmc;
+                if (GetProcessMemoryInfo(hProcess, &pmc, sizeof(pmc))) {
+                    proc.memory_usage = (float)(pmc.WorkingSetSize * 100.0 / system_info_ref->total_memory);
+                }
+                
+                proc.state = "R"; // Simplified for Windows
+                proc.cpu_usage = 0.0f; // Would need more complex implementation for real CPU usage
+                
+                processes.push_back(proc);
+                CloseHandle(hProcess);
             }
-            
-            if (isNumeric) {
-                int pid = std::stoi(name);
-                ProcessInfo process;
-                process.pid = pid;
-                process.selected = false;
-                
-                // Get process name from stat file
-                std::string statPath = "/proc/" + name + "/stat";
-                std::ifstream statFile(statPath);
-                
-                if (statFile.is_open()) {
-                    std::string line;
-                    if (std::getline(statFile, line)) {
-                        std::istringstream iss(line);
-                        std::string unused;
-                        char state;
-                        
-                        // Extract the process name from between parentheses
-                        size_t start = line.find('(');
-                        size_t end = line.rfind(')');
-                        
-                        if (start != std::string::npos && end != std::string::npos && end > start) {
-                            process.name = line.substr(start + 1, end - start - 1);
-                            
-                            // Skip to the state character
-                            iss.seekg(end + 2);
-                            iss >> state;
-                            
-                            // Map state character to descriptive string
-                            switch (state) {
-                                case 'R': process.state = "Running"; break;
-                                case 'S': process.state = "Sleeping"; break;
-                                case 'D': process.state = "Disk Sleep"; break;
-                                case 'Z': process.state = "Zombie"; break;
-                                case 'T': process.state = "Stopped"; break;
-                                case 't': process.state = "Tracing"; break;
-                                case 'X': process.state = "Dead"; break;
-                                case 'I': process.state = "Idle"; break;
-                                default: process.state = "Unknown";
-                            }
-                            
-                            // Skip to the CPU time fields
-                            for (int i = 0; i < 11; i++) iss >> unused;
-                            
-                            // Read utime, stime, cutime, cstime
-                            unsigned long utime, stime, cutime, cstime;
-                            iss >> utime >> stime >> cutime >> cstime;
-                            
-                            // Total CPU time for this process in clock ticks
-                            unsigned long long totalCpuTime = utime + stime + cutime + cstime;
-                            
-                            // Calculate CPU usage percentage
-                            process.cpuUsage = calculateProcessCpuUsage(pid, totalCpuTime);
+        }
+    }
+#else
+    processes.clear();
+    system_info_ref->total_processes = 0;
+    system_info_ref->running_processes = 0;
+    system_info_ref->sleeping_processes = 0;
+    system_info_ref->zombie_processes = 0;
+    system_info_ref->stopped_processes = 0;
+    
+    DIR* proc_dir = opendir("/proc");
+    if (!proc_dir) return;
+    
+    struct dirent* entry;
+    while ((entry = readdir(proc_dir)) != nullptr) {
+        if (!isdigit(entry->d_name[0])) continue;
+        
+        int pid = std::stoi(entry->d_name);
+        std::string stat_path = "/proc/" + std::string(entry->d_name) + "/stat";
+        std::string status_path = "/proc/" + std::string(entry->d_name) + "/status";
+        
+        std::ifstream stat_file(stat_path);
+        if (!stat_file.is_open()) continue;
+        
+        std::string line;
+        std::getline(stat_file, line);
+        
+        std::istringstream iss(line);
+        std::string pid_str, comm, state;
+        long long utime, stime, cutime, cstime, starttime;
+        long vsize, rss;
+        
+        // Parse stat file for basic info
+        iss >> pid_str >> comm >> state;
+        for (int i = 0; i < 10; ++i) iss >> pid_str; // Skip fields
+        iss >> utime >> stime >> cutime >> cstime;
+        for (int i = 0; i < 4; ++i) iss >> pid_str; // Skip fields
+        iss >> starttime;
+        iss >> vsize >> rss;
+        
+        ProcessInfo proc;
+        proc.pid = pid;
+        proc.name = comm.substr(1, comm.length() - 2); // Remove parentheses
+        proc.state = state;
+        
+        // Calculate memory usage (RSS in pages, convert to percentage)
+        long page_size = sysconf(_SC_PAGESIZE);
+        proc.memory_usage = (float)(rss * page_size * 100.0 / system_info_ref->total_memory);
+        
+        // Simple CPU usage calculation (would need previous values for accurate calculation)
+        proc.cpu_usage = 0.0f;
+        
+        processes.push_back(proc);
+        system_info_ref->total_processes++;
+        
+        if (state == "R") system_info_ref->running_processes++;
+        else if (state == "S" || state == "I") system_info_ref->sleeping_processes++;
+        else if (state == "Z") system_info_ref->zombie_processes++;
+        else if (state == "T") system_info_ref->stopped_processes++;
+    }
+    
+    closedir(proc_dir);
+#endif
+    
+    selected_processes.resize(processes.size(), false);
+}
+
+void MemoryManager::UpdateDiskInfo() {
+#ifdef _WIN32
+    // Windows disk info
+    ULARGE_INTEGER freeBytesAvailable, totalNumberOfBytes, totalNumberOfFreeBytes;
+    if (GetDiskFreeSpaceExA("C:\\", &freeBytesAvailable, &totalNumberOfBytes, &totalNumberOfFreeBytes)) {
+        system_info_ref->total_disk = totalNumberOfBytes.QuadPart;
+        system_info_ref->used_disk = totalNumberOfBytes.QuadPart - totalNumberOfFreeBytes.QuadPart;
+        system_info_ref->disk_usage = (float)(system_info_ref->used_disk * 100.0 / system_info_ref->total_disk);
+    }
+#else
+    // Linux disk info using statvfs for root filesystem
+    struct statvfs stat;
+    if (statvfs("/", &stat) == 0) {
+        system_info_ref->total_disk = stat.f_blocks * stat.f_frsize;
+        system_info_ref->used_disk = (stat.f_blocks - stat.f_bavail) * stat.f_frsize;
+        system_info_ref->disk_usage = (float)(system_info_ref->used_disk * 100.0 / system_info_ref->total_disk);
+    }
+#endif
+}
+
+std::string MemoryManager::FormatBytes(uint64_t bytes) {
+    const char* units[] = {"B", "KB", "MB", "GB", "TB"};
+    int unit = 0;
+    double value = (double)bytes;
+    
+    while (value >= 1024.0 && unit < 4) {
+        value /= 1024.0;
+        unit++;
+    }
+    
+    char buffer[64];
+    snprintf(buffer, sizeof(buffer), "%.2f %s", value, units[unit]);
+    return std::string(buffer);
+}
+
+void MemoryManager::RenderMemoryAndProcesses() {
+    // Memory usage section
+    ImGui::Text("Physical Memory (RAM):");
+    ImGui::ProgressBar(system_info_ref->memory_usage / 100.0f, ImVec2(0, 0), 
+                      (FormatBytes(system_info_ref->used_memory) + " / " + FormatBytes(system_info_ref->total_memory)).c_str());
+    
+    ImGui::Text("Virtual Memory (SWAP):");
+    ImGui::ProgressBar(system_info_ref->swap_usage / 100.0f, ImVec2(0, 0), 
+                      (FormatBytes(system_info_ref->used_swap) + " / " + FormatBytes(system_info_ref->total_swap)).c_str());
+    
+    ImGui::Text("Disk Usage:");
+    ImGui::ProgressBar(system_info_ref->disk_usage / 100.0f, ImVec2(0, 0), 
+                      (FormatBytes(system_info_ref->used_disk) + " / " + FormatBytes(system_info_ref->total_disk)).c_str());
+    
+    ImGui::Separator();
+    
+    // Process filter
+    ImGui::Text("Filter processes:");
+    ImGui::InputText("##filter", process_filter, sizeof(process_filter));
+    
+    // Process controls
+    ImGui::SameLine();
+    if (ImGui::Button("Refresh")) {
+        UpdateProcesses();
+    }
+    
+    // Process statistics
+    ImGui::Text("Total: %d | Running: %d | Sleeping: %d | Zombie: %d | Stopped: %d", 
+               system_info_ref->total_processes, system_info_ref->running_processes,
+               system_info_ref->sleeping_processes, system_info_ref->zombie_processes,
+               system_info_ref->stopped_processes);
+    
+    ImGui::Separator();
+    
+    // Process table
+    if (ImGui::BeginTable("ProcessTable", 5, ImGuiTableFlags_Borders | ImGuiTableFlags_Resizable | 
+                         ImGuiTableFlags_RowBg | ImGuiTableFlags_Sortable | ImGuiTableFlags_ScrollY)) {
+        ImGui::TableSetupColumn("PID", ImGuiTableColumnFlags_DefaultSort);
+        ImGui::TableSetupColumn("Name");
+        ImGui::TableSetupColumn("State");
+        ImGui::TableSetupColumn("CPU %");
+        ImGui::TableSetupColumn("Memory %");
+        ImGui::TableHeadersRow();
+        
+        std::string filter_str = std::string(process_filter);
+        std::transform(filter_str.begin(), filter_str.end(), filter_str.begin(), ::tolower);
+        
+        // Sort processes if needed
+        if (ImGuiTableSortSpecs* sort_specs = ImGui::TableGetSortSpecs()) {
+            if (sort_specs->SpecsDirty) {
+                std::sort(processes.begin(), processes.end(), [&](const ProcessInfo& a, const ProcessInfo& b) {
+                    for (int n = 0; n < sort_specs->SpecsCount; n++) {
+                        const ImGuiTableColumnSortSpecs* sort_spec = &sort_specs->Specs[n];
+                        int delta = 0;
+                        switch (sort_spec->ColumnIndex) {
+                            case 0: delta = (a.pid < b.pid) ? -1 : (a.pid > b.pid) ? 1 : 0; break;
+                            case 1: delta = a.name.compare(b.name); break;
+                            case 2: delta = a.state.compare(b.state); break;
+                            case 3: delta = (a.cpu_usage < b.cpu_usage) ? -1 : (a.cpu_usage > b.cpu_usage) ? 1 : 0; break;
+                            case 4: delta = (a.memory_usage < b.memory_usage) ? -1 : (a.memory_usage > b.memory_usage) ? 1 : 0; break;
                         }
+                        if (delta != 0)
+                            return (sort_spec->SortDirection == ImGuiSortDirection_Ascending) ? (delta < 0) : (delta > 0);
                     }
-                    statFile.close();
-                }
-                
-                // Get memory usage from status file
-                std::string statusPath = "/proc/" + name + "/status";
-                std::ifstream statusFile(statusPath);
-                
-                if (statusFile.is_open()) {
-                    std::string line;
-                    unsigned long vmRSS = 0;
-                    
-                    while (std::getline(statusFile, line)) {
-                        if (line.find("VmRSS:") == 0) {
-                            std::istringstream iss(line);
-                            std::string dummy;
-                            iss >> dummy >> vmRSS;
-                            break;
-                        }
-                    }
-                    statusFile.close();
-                    
-                    // Calculate memory usage percentage based on total system RAM
-                    if (ram.total > 0) {
-                        process.memoryUsage = (float)(vmRSS * 1024) / (float)ram.total * 100.0f;
-                    } else {
-                        process.memoryUsage = 0.0f;
-                    }
-                }
-                
-                processes.push_back(process);
+                    return a.pid < b.pid;
+                });
+                sort_specs->SpecsDirty = false;
             }
         }
         
-        closedir(procDir);
+        for (size_t i = 0; i < processes.size(); ++i) {
+            const auto& proc = processes[i];
+            
+            // Apply filter
+            if (!filter_str.empty()) {
+                std::string proc_name = proc.name;
+                std::transform(proc_name.begin(), proc_name.end(), proc_name.begin(), ::tolower);
+                if (proc_name.find(filter_str) == std::string::npos && 
+                    std::to_string(proc.pid).find(filter_str) == std::string::npos) {
+                    continue;
+                }
+            }
+            
+            ImGui::TableNextRow();
+            
+            // Selectable row
+            ImGui::TableSetColumnIndex(0);
+            if (ImGui::Selectable(std::to_string(proc.pid).c_str(), selected_processes[i], 
+                                 ImGuiSelectableFlags_SpanAllColumns)) {
+                selected_processes[i] = !selected_processes[i];
+            }
+            
+            ImGui::TableSetColumnIndex(1);
+            ImGui::Text("%s", proc.name.c_str());
+            
+            ImGui::TableSetColumnIndex(2);
+            ImGui::Text("%s", proc.state.c_str());
+            
+            ImGui::TableSetColumnIndex(3);
+            ImGui::Text("%.1f", proc.cpu_usage);
+            
+            ImGui::TableSetColumnIndex(4);
+            ImGui::Text("%.2f", proc.memory_usage);
+        }
+        
+        ImGui::EndTable();
     }
     
-    // Sort processes by CPU usage (descending)
-    std::sort(processes.begin(), processes.end(), 
-              [](const ProcessInfo& a, const ProcessInfo& b) {
-                  return a.cpuUsage > b.cpuUsage;
-              });
+    // Process actions
+    if (ImGui::Button("Kill Selected")) {
+        KillSelectedProcesses();
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Clear Selection")) {
+        std::fill(selected_processes.begin(), selected_processes.end(), false);
+    }
 }
 
-void MemoryInfo::drawMemoryMonitor() {
-    // This function is for ImGui UI - not needed for console version
+void MemoryManager::KillSelectedProcesses() {
+    for (size_t i = 0; i < processes.size() && i < selected_processes.size(); ++i) {
+        if (selected_processes[i]) {
+#ifdef _WIN32
+            HANDLE hProcess = OpenProcess(PROCESS_TERMINATE, FALSE, processes[i].pid);
+            if (hProcess) {
+                TerminateProcess(hProcess, 1);
+                CloseHandle(hProcess);
+            }
+#else
+            kill(processes[i].pid, SIGTERM);
+#endif
+        }
+    }
+    // Clear selection after killing
+    std::fill(selected_processes.begin(), selected_processes.end(), false);
+    // Refresh process list
+    UpdateProcesses();
 }
