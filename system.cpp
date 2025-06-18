@@ -7,6 +7,8 @@ SystemManager::SystemManager() {
     temp_history.reserve(HISTORY_SIZE);
 }
 
+const int SystemManager::HISTORY_SIZE;
+
 void SystemManager::Initialize() {
 #ifdef _WIN32
     InitializeWindows();
