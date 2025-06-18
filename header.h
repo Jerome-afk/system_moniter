@@ -34,6 +34,9 @@
 #include <ifaddrs.h>
 #include <net/if.h>
 #include <arpa/inet.h>
+#include <sys/statvfs.h>
+#include <signal.h>
+#include <unistd.h>
 #endif
 
 // Data structures
@@ -167,8 +170,15 @@ public:
     void Update();
     // void UpdateNetworkInfo();
     void UpdateNetworkInterfaces();
-    void UpdateNetworkInterfacesWindows();
     void CalculateNetworkRates();
+
+    #ifdef _WIN32
+    void UpdateNetworkInterfacesWindows();
+    #else
+    void UpdateNetworkInterfacesLinux();
+    void GetInterfaceDetails(NetworkInterface&);
+    #endif
+
     
     // Getters
     const std::vector<NetworkInterface>& GetNetworkInterfaces() const { return network_interfaces; }
