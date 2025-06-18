@@ -115,7 +115,9 @@ int main() {
     return 0;
 }
 
+#ifdef _WIN32
 int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
     // This is a Windows-specific entry point, but we will use SDL for cross-platform compatibility.
     return main();
 }
+#endif
